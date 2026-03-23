@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "claude-plugins-official",
+  "name": "kais-plugins",
   "description": "Directory of popular Claude Code extensions including development tools, productivity plugins, and MCP integrations",
   "owner": {
     "name": "Anthropic",
@@ -358,7 +358,7 @@
       "homepage": "https://github.com/awslabs/agent-plugins"
     },
     {
-      "name": "discord",
+      "name": "discord-dev",
       "description": "Discord messaging bridge with built-in access control. Manage pairing, allowlists, and policy via /discord:access.",
       "category": "productivity",
       "source": "./external_plugins/discord"

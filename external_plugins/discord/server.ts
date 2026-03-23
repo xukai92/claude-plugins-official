@@ -89,6 +89,8 @@ type PendingEntry = {
 type GroupPolicy = {
   requireMention: boolean
   allowFrom: string[]
+  /** Allow bot messages through the gate (bots must still be in allowFrom). Default: false. */
+  allowBotMessages?: boolean
 }
 
 type Access = {
@@ -225,6 +227,9 @@ async function gate(msg: Message): Promise<GateResult> {
   const pruned = pruneExpired(access)
   if (pruned) saveAccess(access)
 
+  // Drop bot messages early for DMs (never allowed).
+  if (msg.author.bot && msg.channel.type === ChannelType.DM) return { action: 'drop' }
+
   if (access.dmPolicy === 'disabled') return { action: 'drop' }
 
   const senderId = msg.author.id
@@ -269,6 +274,7 @@ async function gate(msg: Message): Promise<GateResult> {
     : msg.channelId
   const policy = access.groups[channelId]
   if (!policy) return { action: 'drop' }
+  if (msg.author.bot && !(policy.allowBotMessages ?? false)) return { action: 'drop' }
   const groupAllowFrom = policy.allowFrom ?? []
   const requireMention = policy.requireMention ?? true
   if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
@@ -666,7 +672,8 @@ client.on('error', err => {
 })
 
 client.on('messageCreate', msg => {
-  if (msg.author.bot) return
+  // Never respond to our own messages.
+  if (msg.author.id === client.user?.id) return
   handleInbound(msg).catch(e => process.stderr.write(`discord: handleInbound failed: ${e}\n`))
 })
 
