@@ -99,6 +99,9 @@ type Access = {
   /** Keyed on channel ID (snowflake), not guild ID. One entry per guild channel. */
   groups: Record<string, GroupPolicy>
   pending: Record<string, PendingEntry>
+  /** Maps DM channel ID → user ID for allowlisted users. Populated on inbound delivery
+   *  so the outbound gate can resolve recipientId even when the channel is a partial. */
+  dmChannels?: Record<string, string>
   mentionPatterns?: string[]
   // delivery/UX config — optional, defaults live in the reply handler
   /** Emoji to react with on receipt. Empty string disables. Unicode char or custom emoji ID. */
@@ -236,7 +239,17 @@ async function gate(msg: Message): Promise<GateResult> {
   const isDM = msg.channel.type === ChannelType.DM
 
   if (isDM) {
-    if (access.allowFrom.includes(senderId)) return { action: 'deliver', access }
+    if (access.allowFrom.includes(senderId)) {
+      // Keep a persistent channel-ID → user-ID mapping so the outbound gate can
+      // resolve recipientId even when the DM channel is cached as a partial
+      // (Partials.Channel causes discord.js to cache DM channels without recipient data).
+      if (access.dmChannels?.[msg.channelId] !== senderId) {
+        if (!access.dmChannels) access.dmChannels = {}
+        access.dmChannels[msg.channelId] = senderId
+        saveAccess(access)
+      }
+      return { action: 'deliver', access }
+    }
     if (access.dmPolicy === 'allowlist') return { action: 'drop' }
 
     // pairing mode — check for existing non-expired code for this sender
@@ -399,7 +412,10 @@ async function fetchAllowedChannel(id: string) {
   const ch = await fetchTextChannel(id)
   const access = loadAccess()
   if (ch.type === ChannelType.DM) {
-    if (access.allowFrom.includes(ch.recipientId)) return ch
+    // ch.recipientId is null on partial DM channels (a side-effect of Partials.Channel).
+    // Fall back to the dmChannels map populated by the inbound gate.
+    const recipientId = ch.recipientId ?? access.dmChannels?.[id]
+    if (recipientId && access.allowFrom.includes(recipientId)) return ch
   } else {
     const key = ch.isThread() ? ch.parentId ?? ch.id : ch.id
     if (key in access.groups) return ch
