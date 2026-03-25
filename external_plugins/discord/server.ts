@@ -112,6 +112,8 @@ type Access = {
   textChunkLimit?: number
   /** Split on paragraph boundaries instead of hard char count. */
   chunkMode?: 'length' | 'newline'
+  /** Max consecutive bot messages per channel before dropping. Default: 5. */
+  botMessageLimit?: number
 }
 
 function defaultAccess(): Access {
@@ -156,6 +158,7 @@ function readAccessFile(): Access {
       replyToMode: parsed.replyToMode,
       textChunkLimit: parsed.textChunkLimit,
       chunkMode: parsed.chunkMode,
+      botMessageLimit: parsed.botMessageLimit,
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return defaultAccess()
@@ -214,6 +217,9 @@ type GateResult =
 // Track message IDs we recently sent, so reply-to-bot in guild channels
 // counts as a mention without needing fetchReference().
 const recentSentIds = new Set<string>()
+
+/** Per-channel count of consecutive bot-authored messages that passed the gate. */
+const botConsecutiveCount = new Map<string, number>()
 const RECENT_SENT_CAP = 200
 
 function noteSent(id: string): void {
@@ -708,6 +714,28 @@ async function handleInbound(msg: Message): Promise<void> {
       process.stderr.write(`discord channel: failed to send pairing code: ${err}\n`)
     }
     return
+  }
+
+  // Bot-to-bot consecutive message limit.
+  // Human messages reset the counter; bot messages increment it.
+  // Only messages that passed gate() are counted.
+  const limitChannelId = msg.channel.isThread()
+    ? msg.channel.parentId ?? msg.channelId
+    : msg.channelId
+
+  if (!msg.author.bot) {
+    botConsecutiveCount.set(limitChannelId, 0)
+  } else {
+    const access = result.access
+    const limit = access.botMessageLimit ?? 5
+    const count = botConsecutiveCount.get(limitChannelId) ?? 0
+    if (count >= limit) {
+      process.stderr.write(
+        `discord: dropping bot message in ${limitChannelId} — ${count} consecutive bot messages (limit: ${limit})\n`,
+      )
+      return
+    }
+    botConsecutiveCount.set(limitChannelId, count + 1)
   }
 
   const chat_id = msg.channelId
