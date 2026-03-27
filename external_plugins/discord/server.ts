@@ -25,7 +25,7 @@ import {
   type Attachment,
 } from 'discord.js'
 import { randomBytes } from 'crypto'
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
 import { homedir } from 'os'
 import { join, sep } from 'path'
 
@@ -153,6 +153,7 @@ function readAccessFile(): Access {
       allowFrom: parsed.allowFrom ?? [],
       groups: parsed.groups ?? {},
       pending: parsed.pending ?? {},
+      dmChannels: parsed.dmChannels,
       mentionPatterns: parsed.mentionPatterns,
       ackReaction: parsed.ackReaction,
       replyToMode: parsed.replyToMode,
@@ -411,6 +412,14 @@ async function fetchTextChannel(id: string) {
   return ch
 }
 
+const DM_DEBUG_LOG = '/home/shared/infra/discord-dm-debug.log'
+
+function dmLog(msg: string): void {
+  try {
+    appendFileSync(DM_DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`)
+  } catch {}
+}
+
 // Outbound gate — tools can only target chats the inbound gate would deliver
 // from. DM channel ID ≠ user ID, so we inspect the fetched channel's type.
 // Thread → parent lookup mirrors the inbound gate.
@@ -421,7 +430,36 @@ async function fetchAllowedChannel(id: string) {
     // ch.recipientId is null on partial DM channels (a side-effect of Partials.Channel).
     // Fall back to the dmChannels map populated by the inbound gate.
     const recipientId = ch.recipientId ?? access.dmChannels?.[id]
-    if (recipientId && access.allowFrom.includes(recipientId)) return ch
+
+    dmLog(
+      `DM outbound channel=${id} recipientId_discord=${ch.recipientId ?? 'null'} partial=${ch.partial}` +
+      ` dmChannels_hit=${access.dmChannels?.[id] ?? 'miss'} resolved=${recipientId ?? 'null'}` +
+      ` allowFrom=${JSON.stringify(access.allowFrom)} dmPolicy=${access.dmPolicy}` +
+      ` access_dmChannels=${JSON.stringify(access.dmChannels ?? null)}`,
+    )
+
+    if (recipientId && access.allowFrom.includes(recipientId)) {
+      dmLog(`DM allowed channel=${id} recipientId=${recipientId}`)
+      return ch
+    }
+
+    // Re-read access.json fresh in case the in-memory access object was stale.
+    // This costs one fs.readFileSync — no Discord API calls.
+    const freshAccess = readAccessFile()
+    const freshRecipientId = ch.recipientId ?? freshAccess.dmChannels?.[id]
+
+    dmLog(
+      `DM retry after fresh read channel=${id} freshRecipientId=${freshRecipientId ?? 'null'}` +
+      ` freshDmChannels=${JSON.stringify(freshAccess.dmChannels ?? null)}` +
+      ` freshAllowFrom=${JSON.stringify(freshAccess.allowFrom)}`,
+    )
+
+    if (freshRecipientId && freshAccess.allowFrom.includes(freshRecipientId)) {
+      dmLog(`DM allowed on retry (stale cache fixed) channel=${id} recipientId=${freshRecipientId}`)
+      return ch
+    }
+
+    dmLog(`DM rejected channel=${id} — not in allowFrom after retry`)
   } else {
     const key = ch.isThread() ? ch.parentId ?? ch.id : ch.id
     if (key in access.groups) return ch
